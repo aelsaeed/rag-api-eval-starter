@@ -1,0 +1,5 @@
+# Platform Overview
+
+The RAG platform supports ingesting markdown, text, and small PDF files through a single API endpoint. Each document is split into overlapping chunks to keep context windows stable for retrieval. Chunks are embedded with a sentence-transformers model and stored in Qdrant for fast similarity search.
+
+The API exposes a /query endpoint that retrieves the most relevant chunks and blends dense vector similarity with keyword overlap scores. This hybrid strategy improves recall for exact terms while preserving semantic matching for paraphrased questions. The service returns citations that include the document id, a snippet, and the blended score so clients can audit sources. Responses are intentionally concise to reduce token usage while still providing grounding context. The system favors low-latency retrieval paths and avoids heavy prompt orchestration in the starter template. Operators can tune chunk sizes and the hybrid alpha weighting through environment variables without code changes.
