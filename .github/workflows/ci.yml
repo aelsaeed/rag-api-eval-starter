@@ -2,27 +2,46 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 jobs:
-  lint-test:
+  quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[dev]
-      - name: Ruff
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: make lint
+
+      - name: Typecheck (mypy)
+        run: make typecheck
+
+      - name: Tests
+        run: make test
+
+      - name: Eval (tiny deterministic set)
+        run: make eval-ci
+
+      - name: Validate docker compose
+        if: ${{ hashFiles('docker-compose.yml', 'compose.yml', 'compose.yaml') != '' }}
         run: |
-          ruff check app eval tests
-          ruff format --check app eval tests
-      - name: Mypy
-        run: |
-          mypy app eval
-      - name: Pytest
-        run: |
-          pytest
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker is not available in runner; skipping compose validation"
+            exit 0
+          fi
+          if [ -f docker-compose.yml ]; then docker compose -f docker-compose.yml config; fi
+          if [ -f compose.yml ]; then docker compose -f compose.yml config; fi
+          if [ -f compose.yaml ]; then docker compose -f compose.yaml config; fi
