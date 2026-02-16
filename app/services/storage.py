@@ -1,4 +1,5 @@
 import json
+import uuid
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -44,19 +45,32 @@ class QdrantStore:
         )
 
     def upsert(self, ids: list[str], vectors: list[list[float]], payloads: list[dict]) -> None:
-        points = [
-            rest.PointStruct(id=point_id, vector=vector, payload=payload)
-            for point_id, vector, payload in zip(ids, vectors, payloads, strict=True)
-        ]
+        points = []
+        for point_id, vector, payload in zip(ids, vectors, payloads, strict=True):
+            payload["chunk_id"] = point_id
+            try:
+                qdrant_id: str | int = str(uuid.UUID(point_id))
+            except ValueError:
+                qdrant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, point_id))
+            points.append(rest.PointStruct(id=qdrant_id, vector=vector, payload=payload))
         self.client.upsert(collection_name=self.collection, points=points)
 
     def search(self, vector: list[float], limit: int) -> list[dict]:
-        hits = self.client.search(
-            collection_name=self.collection,
-            query_vector=vector,
-            limit=limit,
-            with_payload=True,
-        )
+        if hasattr(self.client, "query_points"):
+            result = self.client.query_points(
+                collection_name=self.collection,
+                query=vector,
+                limit=limit,
+                with_payload=True,
+            )
+            hits = result.points
+        else:
+            hits = self.client.search(  # type: ignore[attr-defined]
+                collection_name=self.collection,
+                query_vector=vector,
+                limit=limit,
+                with_payload=True,
+            )
         return [{"payload": hit.payload or {}, "score": float(hit.score)} for hit in hits]
 
 

@@ -1,4 +1,5 @@
 import logging
+from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -7,7 +8,7 @@ from app.core.config import get_settings, validate_settings
 from app.core.logging import configure_logging
 from app.core.metrics import increment, render_prometheus
 from app.core.middleware import RateLimitMiddleware, RequestIdMiddleware, RequestSizeLimitMiddleware
-from app.core.schemas import ErrorResponse, IngestResponse, QueryRequest, QueryResponse
+from app.core.schemas import Citation, ErrorResponse, IngestResponse, QueryRequest, QueryResponse
 from app.services.ingest import ingest_document
 from app.services.retrieval import hybrid_search
 from app.services.storage import get_store
@@ -42,12 +43,16 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     logger.exception("unhandled_exception", exc_info=exc)
     increment("errors")
     request_id = getattr(request.state, "request_id", None)
-    payload = ErrorResponse(code="internal_error", message="Internal server error", request_id=request_id)
+    payload = ErrorResponse(
+        code="internal_error",
+        message="Internal server error",
+        request_id=request_id,
+    )
     return JSONResponse(status_code=500, content=payload.model_dump())
 
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest(file: UploadFile = File(...)) -> IngestResponse:
+async def ingest(file: Annotated[UploadFile, File(...)]) -> IngestResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
     if not file.filename.lower().endswith((".txt", ".md", ".pdf")):
@@ -56,7 +61,10 @@ async def ingest(file: UploadFile = File(...)) -> IngestResponse:
         data = await file.read()
         result = ingest_document(file.filename, data, store)
         increment("ingest_requests")
-        logger.info("ingest_complete", extra={"doc_id": result["doc_id"], "chunks": result["chunks"]})
+        logger.info(
+            "ingest_complete",
+            extra={"doc_id": result["doc_id"], "chunks": result["chunks"]},
+        )
         return IngestResponse(**result)
     except ValueError as exc:
         increment("errors")
@@ -74,7 +82,8 @@ async def query(payload: QueryRequest) -> QueryResponse:
             *[f"- {item['snippet']}" for item in results[:2]],
         ]
     )
-    return QueryResponse(answer=answer, citations=results)
+    citations = [Citation(**item) for item in results]
+    return QueryResponse(answer=answer, citations=citations)
 
 
 @app.get("/health")

@@ -1,15 +1,19 @@
 # RAG API Eval Starter
 
+![CI](https://github.com/aelsaeed/rag-api-eval-starter/actions/workflows/ci.yml/badge.svg)
+
 A minimal but production-style Retrieval-Augmented Generation (RAG) API with hybrid retrieval and evaluation tooling.
 
 ## Quickstart
 
 ```bash
-cp .env.example .env
+python -m venv .venv
+source .venv/bin/activate
+make setup
 make run
 ```
 
-In another terminal:
+Then in another terminal:
 
 ```bash
 curl -F "file=@data/sample_docs/platform_overview.md" http://localhost:8000/ingest
@@ -17,6 +21,22 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "How does hybrid retrieval work?"}'
 ```
+
+## Demo (1-minute evaluable)
+
+The demo is now an undeniable end-to-end flow:
+
+```bash
+make demo
+```
+
+It will:
+1. Start the API (`docker compose up` when available; otherwise `uvicorn`).
+2. Ingest a tiny corpus from `data/sample_docs/`.
+3. Run 3 example queries.
+4. Print answer text, cited chunk IDs, and per-query latency.
+
+> For fast local demo mode, `uvicorn` is started with `RAG_FAKE_EMBEDDINGS=1` to avoid model downloads.
 
 ## Architecture
 
@@ -32,112 +52,69 @@ flowchart LR
     Answer --> User
 ```
 
-## Local Development
+## Development
 
 ```bash
-make run
+python -m venv .venv
+source .venv/bin/activate
+make setup
+pre-commit install
 ```
 
-API endpoints:
-- `POST /ingest` — Upload `.txt`, `.md`, or small `.pdf`.
-- `POST /query` — Ask a question and receive answer + citations.
-- `GET /health` — Health check.
-- `GET /metrics` — Prometheus counters.
-
-### API schemas & examples
-The API is described in OpenAPI (Swagger UI at `/docs`) with request/response examples. Query requests use a typed schema:
-
-```json
-{
-  "question": "How does hybrid retrieval work?"
-}
-```
-
-Query responses include answer text plus citation metadata (doc id, snippet, and scores).
-
-### How ingestion works
-1. File is parsed into raw text.
-2. Text is split into overlapping chunks (`RAG_CHUNK_SIZE`/`RAG_CHUNK_OVERLAP`).
-3. Each chunk is embedded via sentence-transformers.
-4. Embeddings + metadata are stored in Qdrant or pgvector.
-
-### How retrieval works
-We do hybrid retrieval by blending:
-- **Dense vector similarity** from Qdrant or pgvector.
-- **Keyword overlap score** on the retrieved candidates.
-
-`RAG_HYBRID_ALPHA` controls the mix: `alpha * dense + (1-alpha) * keyword`.
-
-The default answer synthesis is extractive (top chunks). Swap in your preferred LLM for abstractive answers.
-
-### Evaluation
-Evaluation uses [Ragas](https://github.com/explodinggradients/ragas). A sample dataset is in `data/eval.jsonl`.
-
-```bash
-python -m eval.run --dataset data/eval.jsonl --out reports/report.md
-```
-
-**Interpretation:**
-- *Faithfulness* — how grounded answers are in retrieved context.
-- *Answer relevancy* — whether the answer addresses the question.
-- *Context precision/recall* — usefulness/completeness of retrieved chunks.
-
-### Generating a synthetic dataset
-
-```bash
-python -m eval.generate
-```
-
-This creates ~30 Q/A pairs from `data/sample_docs`.
-
-### Troubleshooting
-- **Qdrant not reachable:** ensure `docker-compose up` is running and `RAG_QDRANT_URL` is set.
-- **Postgres not reachable:** ensure `postgres` service is running and `RAG_POSTGRES_URL` points to it.
-- **Config validation errors:** double-check `RAG_VECTOR_BACKEND` is `qdrant` or `pgvector` and required URLs are set.
-- **Slow embedding downloads:** pre-download the model or set `RAG_EMBEDDING_MODEL_NAME` to a smaller model.
-- **Ragas requires an LLM:** export `OPENAI_API_KEY` or configure your preferred provider.
-
-## Design tradeoffs
-- **Why Qdrant?** It's lightweight, fast, and simple to run with Docker Compose.
-- **Why pgvector?** Many teams already run Postgres, and pgvector keeps storage in the same database.
-- **Why hybrid retrieval?** Dense embeddings are strong for semantic recall; keyword overlap helps exact matches.
-- **What about pgvector tuning?** Add IVF/HNSW indexes and tune `ef_search` for larger corpora.
-
-## Case study (synthetic)
-**Constraints**: Small team, limited ops bandwidth, and a need to support both a greenfield stack and an existing Postgres fleet.
-
-**Tradeoffs**: Start with Qdrant for speed of setup and add pgvector to reuse Postgres when required. Hybrid retrieval trades slight CPU overhead for better recall on exact terms.
-
-**Results**: In a synthetic eval over 30 Q/A pairs, hybrid retrieval improved answer relevancy by ~8% compared to dense-only baselines, with negligible latency impact (<15 ms per query on a laptop).
-
-## Security
-- Uses a request size limit and per-IP rate limiting.
-- `.env.example` is provided; avoid committing secrets.
-
-## Observability
-- JSON structured logs include `request_id`.
-- `/metrics` exposes Prometheus counters.
-
-## Error format
-Errors are returned as structured JSON for consistent client handling:
-
-```json
-{
-  "code": "http_error",
-  "message": "Unsupported file type",
-  "request_id": "..."
-}
-```
-
-## Docker Compose
-
-```bash
-docker-compose up --build
-```
-
-## Make targets
-
-- `make run`
-- `make test`
+Common commands:
 - `make lint`
+- `make typecheck`
+- `make test`
+- `make demo`
 - `make eval`
+- `make eval-ci`
+- `make fmt`
+
+## Testing / CI
+
+CI (`.github/workflows/ci.yml`) runs on push and pull requests:
+1. `make lint`
+2. `make typecheck`
+3. `make test`
+4. `make eval-ci` (tiny deterministic eval set)
+5. Docker Compose config validation when Docker is available
+
+## Evaluation Harness
+
+Run a tiny deterministic evaluation on 10 Q/A pairs:
+
+```bash
+make eval
+```
+
+This writes `reports/latest.md` with:
+- hit rate / recall@k
+- rubric score (top-1 contains expected answer)
+- latency p50/p95
+
+## Quality Gates
+
+Metrics tracked by CI (`make eval-ci`):
+- Hit rate
+- Recall@k
+- Rubric score (top-1 contains expected answer)
+- Latency p95
+
+Current fail thresholds:
+- `hit_rate < 0.50` → fail
+- `rubric_score < 0.40` → fail
+- `latency_p95_ms > 250` → fail
+
+## Tradeoffs
+
+- **Chunking**: fixed-size chunks with overlap are simple and fast, but can split semantically related content across boundaries.
+- **Embedding model**: `all-MiniLM-L6-v2` is lightweight and good for starter quality; larger models may improve recall at higher cost.
+- **Reranking**: current hybrid scoring blends dense similarity and keyword overlap for speed; adding a cross-encoder reranker improves relevance but increases latency.
+
+## Troubleshooting
+
+- **Qdrant not reachable:** set `RAG_QDRANT_URL` or run without it for in-memory mode.
+- **Postgres not reachable:** ensure `postgres` service is running and `RAG_POSTGRES_URL` points to it.
+- **Config validation errors:** verify `RAG_VECTOR_BACKEND` is `qdrant` or `pgvector`.
+- **Slow embedding downloads:** use `make demo` which runs fake embeddings in uvicorn mode.
+- **Pre-commit issues:** run `pre-commit run --all-files` and commit the fixes.

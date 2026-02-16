@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     environment: str = "dev"
     log_level: str = "INFO"
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    fake_embeddings: bool = False
+    fake_embedding_dim: int = 64
     vector_backend: str = "qdrant"
     qdrant_url: str | None = None
     qdrant_collection: str = "rag_documents"
@@ -20,8 +22,7 @@ class Settings(BaseSettings):
     request_size_limit_mb: int = 5
     rate_limit_per_minute: int = 60
 
-    class Config:
-        env_prefix = "RAG_"
+    model_config = SettingsConfigDict(env_prefix="RAG_")
 
 
 @lru_cache

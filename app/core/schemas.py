@@ -38,12 +38,18 @@ class QueryResponse(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "answer": "Answer (extractive):\n- Hybrid retrieval blends dense and keyword scores.",
+                    "answer": (
+                        "Answer (extractive):\n"
+                        "- Hybrid retrieval blends dense and keyword scores."
+                    ),
                     "citations": [
                         {
                             "doc_id": "example-doc",
                             "chunk_id": "example-doc-0",
-                            "snippet": "The API blends dense vector similarity with keyword overlap.",
+                            "snippet": (
+                                "The API blends dense vector similarity "
+                                "with keyword overlap."
+                            ),
                             "score": 0.83,
                             "dense_score": 0.92,
                             "keyword_score": 0.65,
