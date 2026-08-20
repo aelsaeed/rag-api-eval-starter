@@ -1,40 +1,51 @@
+[build-system]
+requires = ["setuptools>=83.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "rag-api-eval-starter"
-version = "0.1.0"
-description = "Production-style RAG API with evaluation starter"
+version = "0.2.0"
+description = "Explainable hybrid RAG API with deterministic retrieval quality gates"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Example", email = "dev@example.com" }]
 
 dependencies = [
-  "fastapi>=0.110.0",
+  "fastapi>=0.141.1,<1.0.0",
+  "starlette>=1.3.1,<2.0.0",
   "uvicorn[standard]>=0.29.0",
-  "qdrant-client>=1.9.0",
-  "sentence-transformers>=2.5.0",
+  "qdrant-client>=1.19.0,<1.20.0",
   "pydantic-settings>=2.2.1",
-  "python-multipart>=0.0.9",
-  "pypdf>=4.1.0",
+  "python-multipart>=0.0.31",
+  "pypdf>=6.16.1",
   "numpy>=1.26.0",
-  "python-json-logger>=2.0.7",
+  "python-json-logger>=3.1.0,<5.0.0",
   "psycopg[binary]>=3.1.18",
   "pgvector>=0.2.5",
 ]
 
 [project.optional-dependencies]
-eval = [
-  "ragas>=0.1.10",
-  "langchain-openai>=0.1.8",
-  "openai>=1.16.0",
-  "pandas>=2.2.0",
-  "datasets>=2.19.0",
+ml = [
+  "sentence-transformers>=2.5.0",
 ]
 dev = [
-  "pytest>=8.1.0",
-  "httpx>=0.27.0",
+  "build>=1.2.2",
+  "setuptools>=83.0.0",
+  "pytest>=9.0.3",
+  "pytest-cov>=6.0.0",
+  "httpx2>=2.0.0,<3.0.0",
   "mypy>=1.9.0",
   "ruff>=0.3.4",
   "pre-commit>=3.7.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aelsaeed/rag-api-eval-starter"
+Repository = "https://github.com/aelsaeed/rag-api-eval-starter"
+Issues = "https://github.com/aelsaeed/rag-api-eval-starter/issues"
+
+[project.scripts]
+rag-eval = "eval.run:main"
+rag-eval-compare = "eval.compare:main"
 
 [tool.ruff]
 target-version = "py311"
@@ -55,3 +66,19 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = "-q"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["app", "eval"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[tool.setuptools.packages.find]
+include = ["app*", "data*", "eval*"]
+
+[tool.setuptools.package-data]
+data = ["eval.jsonl", "sample_docs/*.md", "sample_docs/*.txt"]
