@@ -1,39 +1,63 @@
-version: "3.9"
-
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_ML: "${RAG_INSTALL_ML:-false}"
+    init: true
     ports:
-      - "8000:8000"
+      - "${DEMO_API_BIND_HOST:-127.0.0.1}:${DEMO_API_PORT:-8000}:8000"
     environment:
-      - RAG_QDRANT_URL=http://qdrant:6333
-      - RAG_POSTGRES_URL=postgresql://rag:rag@postgres:5432/rag
+      - RAG_ENVIRONMENT=${RAG_ENVIRONMENT:-dev}
+      - RAG_LOG_LEVEL=${RAG_LOG_LEVEL:-INFO}
+      - RAG_FAKE_EMBEDDINGS=${RAG_FAKE_EMBEDDINGS:-1}
+      - RAG_FAKE_EMBEDDING_DIM=${RAG_FAKE_EMBEDDING_DIM:-64}
+      - RAG_EMBEDDING_MODEL_NAME=${RAG_EMBEDDING_MODEL_NAME:-sentence-transformers/all-MiniLM-L6-v2}
       - RAG_VECTOR_BACKEND=qdrant
-      - RAG_ENVIRONMENT=prod
+      - RAG_QDRANT_URL=http://qdrant:6333
+      - RAG_QDRANT_COLLECTION=${RAG_QDRANT_COLLECTION:-rag_documents}
+      - RAG_CHUNK_SIZE=${RAG_CHUNK_SIZE:-800}
+      - RAG_CHUNK_OVERLAP=${RAG_CHUNK_OVERLAP:-120}
+      - RAG_RETRIEVAL_STRATEGY=${RAG_RETRIEVAL_STRATEGY:-hybrid}
+      - RAG_TOP_K=${RAG_TOP_K:-5}
+      - RAG_CANDIDATE_MULTIPLIER=${RAG_CANDIDATE_MULTIPLIER:-4}
+      - RAG_RRF_K=${RAG_RRF_K:-60}
+      - RAG_RRF_LEXICAL_WEIGHT=${RAG_RRF_LEXICAL_WEIGHT:-0.65}
+      - RAG_MIN_RELEVANCE_SCORE=${RAG_MIN_RELEVANCE_SCORE:-0.40}
+      - RAG_LEXICAL_SCAN_LIMIT=${RAG_LEXICAL_SCAN_LIMIT:-1000}
+      - RAG_REQUEST_SIZE_LIMIT_MB=${RAG_REQUEST_SIZE_LIMIT_MB:-5}
+      - RAG_MAX_FILENAME_CHARS=${RAG_MAX_FILENAME_CHARS:-255}
+      - RAG_MAX_PDF_PAGES=${RAG_MAX_PDF_PAGES:-50}
+      - RAG_MAX_DOCUMENT_CHARS=${RAG_MAX_DOCUMENT_CHARS:-2000000}
+      - RAG_MAX_DOCUMENT_CHUNKS=${RAG_MAX_DOCUMENT_CHUNKS:-2000}
+      - RAG_RATE_LIMIT_PER_MINUTE=${RAG_RATE_LIMIT_PER_MINUTE:-60}
+      - RAG_INGEST_API_KEY
     depends_on:
-      - qdrant
-      - postgres
-    volumes:
-      - ./:/app
+      qdrant:
+        condition: service_healthy
+    restart: "on-failure:3"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   qdrant:
-    image: qdrant/qdrant:v1.9.2
-    ports:
-      - "6333:6333"
+    image: qdrant/qdrant:v1.18.2
+    expose:
+      - "6333"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -ec 'exec 3<>/dev/tcp/127.0.0.1/6333;
+          printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
+          head -n 1 <&3 | grep -q " 200 "'
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 12
     volumes:
       - qdrant_data:/qdrant/storage
 
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: rag
-      POSTGRES_PASSWORD: rag
-      POSTGRES_DB: rag
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
 volumes:
   qdrant_data:
-  postgres_data:

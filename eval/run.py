@@ -1,157 +1,133 @@
+from __future__ import annotations
+
 import argparse
-import json
-import os
-import statistics
-import time
+from collections.abc import Sequence
 from pathlib import Path
 
+from eval.adapters import OfflineCorpusAdapter, load_corpus
+from eval.app_adapter import ApplicationQueryAdapter
+from eval.dataset import dataset_sha256, load_cases, validate_gold_contexts
+from eval.metrics import QualityGateError, enforce_thresholds, evaluate
+from eval.models import EvaluationReport, QueryAdapter, Thresholds
+from eval.reporting import write_reports
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="data/eval.jsonl")
-    parser.add_argument("--out", default="reports/latest.md")
-    parser.add_argument("--k", type=int, default=5)
-    parser.add_argument("--min-hit-rate", type=float, default=0.5)
-    parser.add_argument("--min-rubric-score", type=float, default=0.4)
-    parser.add_argument("--max-p95-ms", type=float, default=250.0)
-    return parser.parse_args()
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_eval_records(path: str) -> list[dict]:
-    records: list[dict] = []
-    with Path(path).open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    if not records:
-        raise ValueError("Evaluation dataset is empty")
-    return records
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    defaults = Thresholds()
+    parser = argparse.ArgumentParser(
+        description="Run the deterministic, offline RAG golden benchmark",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--dataset", default=str(_PROJECT_ROOT / "data/eval.jsonl"))
+    parser.add_argument("--corpus", default=str(_PROJECT_ROOT / "data/sample_docs"))
+    parser.add_argument("--out", default=str(Path.cwd() / "reports/latest.md"))
+    parser.add_argument("--json-out", default=None)
+    parser.add_argument(
+        "--adapter",
+        choices=("application", "offline"),
+        default="application",
+        help="evaluate the real application pipeline or the standalone lexical reference",
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("dense", "lexical", "hybrid"),
+        default="hybrid",
+        help="application retrieval strategy",
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        choices=(5,),
+        default=5,
+        help="fixed retrieval depth for metrics reported at 1, 3, and 5",
+    )
+    parser.add_argument(
+        "--min-context-recall-at-1", type=float, default=defaults.min_context_recall_at_1
+    )
+    parser.add_argument(
+        "--min-context-recall-at-3", type=float, default=defaults.min_context_recall_at_3
+    )
+    parser.add_argument(
+        "--min-context-recall-at-5", type=float, default=defaults.min_context_recall_at_5
+    )
+    parser.add_argument("--min-mrr-at-5", type=float, default=defaults.min_mrr_at_5)
+    parser.add_argument("--min-ndcg-at-5", type=float, default=defaults.min_ndcg_at_5)
+    parser.add_argument(
+        "--min-answer-fact-coverage",
+        type=float,
+        default=defaults.min_answer_fact_coverage,
+    )
+    parser.add_argument(
+        "--min-citation-precision", type=float, default=defaults.min_citation_precision
+    )
+    parser.add_argument(
+        "--min-abstention-accuracy", type=float, default=defaults.min_abstention_accuracy
+    )
+
+    return parser.parse_args(argv)
 
 
-def percentile(values: list[float], p: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    rank = max(0, min(len(ordered) - 1, int(round((p / 100.0) * (len(ordered) - 1)))))
-    return ordered[rank]
+def run_benchmark(
+    dataset_path: str | Path,
+    adapter: QueryAdapter,
+) -> EvaluationReport:
+    """Evaluate an injected query implementation without importing application state."""
+
+    cases = load_cases(dataset_path)
+    return evaluate(cases, adapter, dataset_hash=dataset_sha256(dataset_path))
 
 
-def run_eval(dataset_path: str, k: int) -> dict:
-    os.environ.setdefault("RAG_FAKE_EMBEDDINGS", "1")
+def run_eval(
+    dataset_path: str | Path,
+    k: int = 5,
+    *,
+    adapter: QueryAdapter | None = None,
+    corpus_path: str | Path = _PROJECT_ROOT / "data/sample_docs",
+) -> EvaluationReport:
+    """Compatibility entry point using the deterministic offline adapter by default."""
 
-    from app.core.config import get_settings
-    from app.services.ingest import ingest_document
-    from app.services.retrieval import hybrid_search
-    from app.services.storage import get_store
-
-    get_settings.cache_clear()
-    store = get_store()
-    store.ensure_collection()
-
-    for path in sorted(Path("data/sample_docs").glob("*")):
-        if path.suffix.lower() in {".md", ".txt"}:
-            ingest_document(path.name, path.read_bytes(), store)
-
-    records = load_eval_records(dataset_path)
-    hits = 0
-    rubric_hits = 0
-    latencies_ms: list[float] = []
-
-    details: list[dict] = []
-    for record in records:
-        question = record["question"]
-        expected = record["answer"]
-
-        started = time.perf_counter()
-        results = hybrid_search(question, store)
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        latencies_ms.append(latency_ms)
-
-        top_k = results[:k]
-        snippets = [item.get("snippet", "") or "" for item in top_k]
-        expected_l = expected.lower()
-        hit = any(expected_l in snippet.lower() for snippet in snippets)
-        top1_hit = bool(snippets) and expected_l in snippets[0].lower()
-
-        hits += int(hit)
-        rubric_hits += int(top1_hit)
-
-        details.append(
-            {
-                "question": question,
-                "hit": hit,
-                "top1_rubric": top1_hit,
-                "latency_ms": latency_ms,
-            }
-        )
-
-    total = len(records)
-    metrics = {
-        "samples": total,
-        "hit_rate": hits / total,
-        "recall_at_k": hits / total,
-        "rubric_score": rubric_hits / total,
-        "latency_p50_ms": statistics.median(latencies_ms),
-        "latency_p95_ms": percentile(latencies_ms, 95),
-        "details": details,
-    }
-    return metrics
+    if k != 5:
+        raise ValueError("k must be exactly 5 for the fixed recall/MRR/nDCG benchmark")
+    cases = load_cases(dataset_path)
+    selected_adapter = adapter
+    if selected_adapter is None:
+        corpus = load_corpus(corpus_path)
+        validate_gold_contexts(cases, corpus)
+        selected_adapter = OfflineCorpusAdapter(corpus)
+    return evaluate(cases, selected_adapter, dataset_hash=dataset_sha256(dataset_path))
 
 
-def render_report(metrics: dict, k: int) -> str:
-    lines = [
-        "# Evaluation Report",
-        "",
-        "## Summary Metrics",
-        f"- Samples: **{metrics['samples']}**",
-        f"- Hit rate: **{metrics['hit_rate']:.3f}**",
-        f"- Recall@{k}: **{metrics['recall_at_k']:.3f}**",
-        f"- Rubric score (top-1 contains expected answer): **{metrics['rubric_score']:.3f}**",
-        f"- Latency p50: **{metrics['latency_p50_ms']:.2f} ms**",
-        f"- Latency p95: **{metrics['latency_p95_ms']:.2f} ms**",
-        "",
-        "## Per-question Results",
-        "| # | Hit | Top1 Rubric | Latency (ms) | Question |",
-        "|---|-----|-------------|--------------|----------|",
-    ]
-
-    for idx, item in enumerate(metrics["details"], start=1):
-        lines.append(
-            "| "
-            f"{idx} | {item['hit']} | {item['top1_rubric']} | {item['latency_ms']:.2f} | "
-            f"{item['question']} |"
-        )
-
-    return "\n".join(lines) + "\n"
+def _thresholds_from_args(args: argparse.Namespace) -> Thresholds:
+    return Thresholds(
+        min_context_recall_at_1=args.min_context_recall_at_1,
+        min_context_recall_at_3=args.min_context_recall_at_3,
+        min_context_recall_at_5=args.min_context_recall_at_5,
+        min_mrr_at_5=args.min_mrr_at_5,
+        min_ndcg_at_5=args.min_ndcg_at_5,
+        min_answer_fact_coverage=args.min_answer_fact_coverage,
+        min_citation_precision=args.min_citation_precision,
+        min_abstention_accuracy=args.min_abstention_accuracy,
+    )
 
 
-def enforce_thresholds(metrics: dict, args: argparse.Namespace) -> None:
-    failures = []
-    if metrics["hit_rate"] < args.min_hit_rate:
-        failures.append(f"hit_rate {metrics['hit_rate']:.3f} < {args.min_hit_rate:.3f}")
-    if metrics["rubric_score"] < args.min_rubric_score:
-        failures.append(
-            f"rubric_score {metrics['rubric_score']:.3f} < {args.min_rubric_score:.3f}"
-        )
-    if metrics["latency_p95_ms"] > args.max_p95_ms:
-        failures.append(f"latency_p95_ms {metrics['latency_p95_ms']:.2f} > {args.max_p95_ms:.2f}")
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
 
-    if failures:
-        raise SystemExit("Quality gate failure: " + "; ".join(failures))
+    if args.adapter == "application":
+        with ApplicationQueryAdapter(args.corpus, strategy=args.strategy) as adapter:
+            report = run_eval(args.dataset, args.k, adapter=adapter)
+    else:
+        report = run_eval(args.dataset, args.k, corpus_path=args.corpus)
+    markdown_path = Path(args.out)
+    json_path = Path(args.json_out) if args.json_out else markdown_path.with_suffix(".json")
+    write_reports(report, markdown_path=markdown_path, json_path=json_path)
 
-
-def main() -> None:
-    args = parse_args()
-    metrics = run_eval(args.dataset, args.k)
-
-    report = render_report(metrics, args.k)
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(report, encoding="utf-8")
-
-    enforce_thresholds(metrics, args)
+    try:
+        enforce_thresholds(report, _thresholds_from_args(args))
+    except QualityGateError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

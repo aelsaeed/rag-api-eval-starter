@@ -1,33 +1,48 @@
 import json
+import re
+from hashlib import sha256
 from pathlib import Path
 
 
 def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in text.replace("\n", " ").split(".") if len(s.strip()) > 20]
+    body = " ".join(
+        line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
+    )
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", body)
+        if len(sentence.strip()) > 20
+    ]
 
 
 def generate(dataset_path: str, docs_path: str, total: int = 30) -> None:
     docs_dir = Path(docs_path)
-    sentences = []
-    for doc in docs_dir.glob("*.md"):
-        sentences.extend(_sentences(doc.read_text(encoding="utf-8")))
-    for doc in docs_dir.glob("*.txt"):
-        sentences.extend(_sentences(doc.read_text(encoding="utf-8")))
+    candidates: list[tuple[str, str]] = []
+    documents = sorted((*docs_dir.glob("*.md"), *docs_dir.glob("*.txt")))
+    for document in documents:
+        candidates.extend(
+            (document.name, sentence)
+            for sentence in _sentences(document.read_text(encoding="utf-8"))
+        )
 
-    if not sentences:
+    if not candidates:
         raise ValueError("No documents found for dataset generation")
+    if total <= 0:
+        raise ValueError("total must be positive")
 
     records = []
-    for idx in range(total):
-        sentence = sentences[idx % len(sentences)]
+    for source, sentence in candidates[:total]:
         subject = sentence.split(" ")[0:5]
+        digest = sha256(f"{source}\0{sentence}".encode()).hexdigest()[:10]
         question = f"What does the documentation say about {' '.join(subject)}?"
         records.append(
             {
+                "id": f"candidate-{digest}",
                 "question": question,
-                "answer": sentence,
-                "contexts": [sentence],
-                "ground_truths": [sentence],
+                "answerable": True,
+                "gold_contexts": [{"source": source, "anchor": sentence, "relevance": 1}],
+                "required_fact_groups": [[sentence]],
+                "tags": ["synthetic", "review-required"],
             }
         )
 
@@ -39,4 +54,5 @@ def generate(dataset_path: str, docs_path: str, total: int = 30) -> None:
 
 
 if __name__ == "__main__":
-    generate("data/eval.jsonl", "data/sample_docs")
+    # Synthetic records are candidates for human review, never the curated gold set.
+    generate("data/eval.candidates.jsonl", "data/sample_docs")
